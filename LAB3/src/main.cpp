@@ -10,6 +10,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <Preferences.h>
 
 constexpr char WIFI_SSID[] = "Pnt";
 constexpr char WIFI_PASSWORD[] = "123456789";
@@ -19,19 +20,17 @@ constexpr uint16_t THINGSBOARD_PORT = 1883U;
 constexpr uint16_t MAX_MESSAGE_SIZE = 1024U;
 constexpr uint32_t SERIAL_DEBUG_BAUD = 115200U;
 
-volatile bool sensorStatus = false;
-
 WiFiClient wifiClient;
 Arduino_MQTT_Client mqttClient(wifiClient);
 ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE);
 
 DHT20 dht20;
-
+Preferences preferences;
 
 constexpr std::array<const char *, 4U> SHARED_ATTRIBUTES_LIST = { "fw_url", "fw_version", "fw_title"};
 
 String firmwareUrl = ""; // lưu link url nhận từ CoreIoT
-String lastFirmwareUrl = ""; // Biến lưu URL firmware đã xử lý trong phiên chạy hiện tại
+String lastFirmwareUrl = ""; // lưu URL firmware đã xử lý trong phiên chạy hiện tại
 
 // Callback khi nhận shared attribute
 void processSharedAttributes(const Shared_Attribute_Data &data) {
@@ -122,7 +121,7 @@ void TaskThingsBoardLoop(void *pvParameters) {
 
 void TaskOTAUpdate(void *pvParameters) {
     while (1) {
-        if (firmwareUrl != "" && firmwareUrl != lastFirmwareUrl) { 
+        if (firmwareUrl != "" && firmwareUrl != lastFirmwareUrl) {
             Serial.println("Starting OTA Update from URL: " + firmwareUrl);
 
             HTTPClient http;
@@ -146,6 +145,12 @@ void TaskOTAUpdate(void *pvParameters) {
                         if (Update.end()) {
                             if (Update.isFinished()) {
                                 Serial.println("OTA Update successful. Rebooting...");
+
+                                // Ghi lại URL firmware đã cập nhật vào NVS
+                                preferences.begin("ota", false);
+                                preferences.putString("last_url", firmwareUrl);
+                                preferences.end();
+
                                 lastFirmwareUrl = firmwareUrl;
                                 http.end();
                                 vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -166,13 +171,16 @@ void TaskOTAUpdate(void *pvParameters) {
                 Serial.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
             }
             http.end();
-            lastFirmwareUrl = firmwareUrl;
+        }
+        else {
+            Serial.println("currentURL: " + firmwareUrl);
+            Serial.println("lastURL: " + lastFirmwareUrl);
+            Serial.println("Firmware URLs are the same. Skipping OTA update.");
         }
 
         vTaskDelay(10000 / portTICK_PERIOD_MS);
     }
 }
-
 
 void setup() {
     Serial.begin(SERIAL_DEBUG_BAUD);
@@ -180,6 +188,11 @@ void setup() {
     InitWiFi();
     Wire.begin(SDA_PIN, SCL_PIN);
     dht20.begin();
+
+    // Load last firmware URL từ NVS
+    preferences.begin("ota", true); // true = chỉ đọc
+    lastFirmwareUrl = preferences.getString("last_url", "");
+    preferences.end();
 
     xTaskCreate(TaskWiFiReconnect, "WiFiReconnect", 4096, NULL, 1, NULL);
     xTaskCreate(TaskCoreIOTConnect, "CoreIOTConnect", 4096, NULL, 1, NULL);
